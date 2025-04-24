@@ -1,72 +1,71 @@
+import os
+from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-import logging
 
-# Configura il logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configura Flask
+app_flask = Flask(__name__)
 
-# Token del bot e ID del canale
-BOT_TOKEN = "7902624733:AAEoUqIaB8B3M6i2Cl0bwyfVng5QHDK95bQ"
-CHANNEL_USERNAME = "@milanorossonerareplay"  # Corretto con @ iniziale
-CONTENT_LINK = "https://t.me/+Jqgbw-dewP04MTE0"
+# Configura il token e altre variabili
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+# Lista di dizionari con tag e nome personalizzato per ogni canale
+REQUIRED_CHANNELS = [
+    {"tag": "@milanorossonerareplay", "name": "Canale Replay Milan"}, 
+]  
+CONTENT = os.getenv("REWARD_LINK", "Contenuto sbloccato: https://t.me/+Jqgbw-dewP04MTE0")
 
+# Crea l'applicazione Telegram
+application = Application.builder().token(TOKEN).build()
+
+# Handler per il comando /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gestisce il comando /start e mostra i pulsanti."""
-    user = update.effective_user
     keyboard = [
-        [InlineKeyboardButton("Unisciti a Canale Replay Milan", url=f"https://t.me/{CHANNEL_USERNAME[1:]}")],
-        [InlineKeyboardButton("Verifica iscrizione", callback_data="check_subscription")]
+        [InlineKeyboardButton(channel["name"], url=f"https://t.me/{channel['tag'][1:]}")]
+        for channel in REQUIRED_CHANNELS
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        f"Ciao {user.first_name}!\nPer sbloccare il contenuto, unisciti al canale e verifica la tua iscrizione.",
-        reply_markup=reply_markup
-    )
+    keyboard.append([InlineKeyboardButton("Verifica", callback_data="check")])
+    await update.message.reply_text("Iscriviti ai canali per sbloccare il link:", reply_markup=InlineKeyboardMarkup(keyboard))
 
+# Handler per la verifica dell'iscrizione
 async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Verifica se l'utente è iscritto al canale e sblocca il contenuto."""
     query = update.callback_query
     user_id = query.from_user.id
-    chat_id = CHANNEL_USERNAME
+    missing = []
+    for channel in REQUIRED_CHANNELS:
+        try:
+            member = await context.bot.get_chat_member(chat_id=channel["tag"], user_id=user_id)
+            if member.status not in ["member", "administrator", "creator"]:
+                missing.append(channel)
+        except:
+            missing.append(channel)
+    if not missing:
+        await query.message.edit_text(CONTENT)
+    else:
+        keyboard = [
+            [InlineKeyboardButton(channel["name"], url=f"https://t.me/{channel['tag'][1:]}")]
+            for channel in missing
+        ]
+        keyboard.append([InlineKeyboardButton("Riprova", callback_data="check")])
+        missing_names = [channel["name"] for channel in missing]
+        await query.message.edit_text("Iscriviti a: " + "\n".join(missing_names), reply_markup=InlineKeyboardMarkup(keyboard))
 
-    try:
-        # Verifica lo stato dell'utente nel canale
-        member = await context.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
-        if member.status in ["member", "administrator", "creator"]:
-            # Utente iscritto, invia il link
-            await query.message.reply_text(f"Grazie per esserti iscritto! Ecco il contenuto sbloccato:\n{CONTENT_LINK}")
-        else:
-            # Utente non iscritto
-            keyboard = [
-                [InlineKeyboardButton("Unisciti a Canale Replay Milan", url=f"https://t.me/{CHANNEL_USERNAME[1:]}")],
-                [InlineKeyboardButton("Verifica iscrizione", callback_data="check_subscription")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.message.reply_text(
-                "Non sei ancora iscritto al canale. Unisciti e verifica nuovamente!",
-                reply_markup=reply_markup
-            )
-    except Exception as e:
-        logger.error(f"Errore nella verifica dell'iscrizione: {e}")
-        await query.message.reply_text("Si è verificato un errore. Riprova più tardi.")
+# Endpoint Flask per il webhook
+@app_flask.route(f"/{TOKEN}", methods=["POST"])
+async def webhook():
+    update = Update.de_json(request.get_json(), application.bot)
+    await application.process_update(update)
+    return "OK"
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gestisce gli errori del bot."""
-    logger.error(f"Errore: {context.error}")
+# Endpoint di salute (per verificare che il servizio sia attivo)
+@app_flask.route("/")
+def health():
+    return "Bot is running"
 
-def main():
-    """Avvia il bot."""
-    # Crea l'applicazione
-    application = Application.builder().token(BOT_TOKEN).build()
-
-    # Aggiungi i gestori
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(check_subscription, pattern="check_subscription"))
-    application.add_error_handler(error_handler)
-
-    # Avvia il bot
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
-
+# Inizializza il bot e avvia Flask
 if __name__ == "__main__":
-    main()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(check_subscription, pattern="check"))
+    
+    # Usa la porta fornita da Render tramite la variabile PORT
+    port = int(os.getenv("PORT", 8080))
+    app_flask.run(host="0.0.0.0", port=port)
